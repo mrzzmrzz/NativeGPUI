@@ -139,9 +139,10 @@ const VIEWS: [(&str, &str, &str); 4] = [
     ("squares.below.rectangle", "as Gallery", "gallery view"),
 ];
 const SEARCH_W: f32 = 240.;
-const WINDOW_RADIUS: f64 = 26.;
 /// AppKit 27's own radius for every titled window, panel and sheet but alerts.
 pub(crate) const SYSTEM_RADIUS: f64 = 16.;
+/// macOS 26 gave toolbar windows 26 pt; macOS 27 uses the system radius for them too.
+const WINDOW_RADIUS: f64 = SYSTEM_RADIUS;
 
 /// AppKit's corner radius for all titled windows but utility panels, read once as the first opens.
 pub(crate) fn concentric_corners() {
