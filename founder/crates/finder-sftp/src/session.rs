@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::thread::{self, JoinHandle};
 
 use parking_lot::Mutex;
@@ -35,6 +35,15 @@ pub(crate) struct Pending(Receiver<Reply>);
 impl Pending {
     pub(crate) fn wait(self) -> Result<Reply, Error> {
         self.0.recv().map_err(|_| Error::Disconnected)
+    }
+
+    /// The reply if it has already arrived.
+    pub(crate) fn ready(&self) -> Option<Result<Reply, Error>> {
+        match self.0.try_recv() {
+            Ok(reply) => Some(Ok(reply)),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(Error::Disconnected)),
+        }
     }
 }
 

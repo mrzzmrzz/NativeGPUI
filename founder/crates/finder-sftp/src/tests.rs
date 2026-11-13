@@ -275,6 +275,42 @@ fn a_parked_progress_callback_pauses_the_transfer() {
 }
 
 #[test]
+fn an_upload_reports_progress_while_the_link_is_slow() {
+    let dir = scratch("slow-upload");
+    let bytes = noise(8 << 20);
+    fs::write(dir.join("source"), &bytes).unwrap();
+    let root = dir.clone();
+    // About 6 MB/s into the server, so the first window of writes takes over a second to send.
+    let server = Server::connect_command(move || {
+        let mut command = Command::new("/bin/sh");
+        command.current_dir(&root).args([
+            "-c",
+            "/usr/bin/perl -e 'while (sysread(STDIN, $b, 32768)) { syswrite(STDOUT, $b); \
+             select(undef, undef, undef, 0.005) }' | /usr/libexec/sftp-server",
+        ]);
+        command
+    })
+    .unwrap();
+    let remote = dir.join("upload");
+    let mut first = None;
+    server
+        .upload(&dir.join("source"), path(&remote), &mut |done, _| {
+            if done > 0 && first.is_none() {
+                first = Some(done);
+            }
+            true
+        })
+        .unwrap();
+    let first = first.unwrap();
+    assert!(
+        first < bytes.len() as u64 / 4,
+        "nothing was reported until {first} bytes had been written"
+    );
+    assert_eq!(fs::read(&remote).unwrap(), bytes);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn lists_while_a_download_waits() {
     let dir = scratch("busy");
     let server = serve(&dir);

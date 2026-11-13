@@ -266,6 +266,11 @@ fn fetch(
 fn push(handle: &Handle, job: &Job, chunk: u32, file: &File) -> Result<(), Error> {
     let mut queue = VecDeque::new();
     let mut more = true;
+    let settle = |len: u32, reply: Result<Reply, Error>| {
+        reply?.ok()?;
+        job.done.fetch_add(len.into(), Ordering::Relaxed);
+        Ok::<(), Error>(())
+    };
     loop {
         while more && queue.len() < WINDOW {
             let Some((offset, len)) = job.claim(chunk) else {
@@ -277,12 +282,16 @@ fn push(handle: &Handle, job: &Job, chunk: u32, file: &File) -> Result<(), Error
             packet.0.resize(start + len as usize, 0);
             file.read_exact_at(&mut packet.0[start..], offset)?;
             queue.push_back((len, handle.session.send(packet)));
+            // A send blocks while ssh's pipe is full, so on a slow link the replies come in here.
+            while let Some(reply) = queue.front().and_then(|(_, pending)| pending.ready()) {
+                let (len, _) = queue.pop_front().unwrap();
+                settle(len, reply)?;
+            }
         }
         let Some((len, pending)) = queue.pop_front() else {
             return job.checked();
         };
-        pending.wait()?.ok()?;
-        job.done.fetch_add(len.into(), Ordering::Relaxed);
+        settle(len, pending.wait())?;
         job.checked()?;
     }
 }
