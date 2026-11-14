@@ -926,9 +926,42 @@ pub(crate) fn ns_file_icon(kind: FileType<'_>) -> Option<Retained<NSImage>> {
         }
         FileType::Folder | FileType::FullFolder => icon_for(ut_type(false, "public.folder")?),
         FileType::Uti(uti) => icon_for(ut_type(false, uti)?),
-        FileType::Extension(extension) => icon_for(ut_type(true, extension)?),
+        FileType::Extension(extension) => {
+            let declared = ut_type(true, extension)?;
+            match extension_probe(&declared, extension) {
+                Some(probe) => {
+                    let probe = NSString::from_str(&probe);
+                    unsafe { msg_send![&*workspace, iconForFile: &*probe] }
+                }
+                None => icon_for(declared),
+            }
+        }
         FileType::Named(name) => NSImage::imageNamed(&NSString::from_str(name)),
     }
+}
+
+// `iconForContentType:` can answer with a stale image, sizes even mixing another claimant's
+// document icon, long after the default app changed, while Finder's `iconForFile:` follows
+// the change. So an extension is drawn from an empty file that carries it. A package
+// extension keeps the type lookup: an empty file would draw as a plain file, not a bundle.
+fn extension_probe(declared: &AnyObject, extension: &str) -> Option<String> {
+    if extension.is_empty() || extension.len() > 64 || extension.contains(['/', '\0']) {
+        return None;
+    }
+    let class = AnyClass::get(c"UTType")?;
+    let package: Option<Retained<AnyObject>> =
+        unsafe { msg_send![class, typeWithIdentifier: ns_string!("com.apple.package")] };
+    let is_package: bool = unsafe { msg_send![declared, conformsToType: &*package?] };
+    if is_package {
+        return None;
+    }
+    let dir = std::env::temp_dir().join("ng-icon-probes");
+    let probe = dir.join(format!("probe.{extension}"));
+    if !probe.exists() {
+        std::fs::create_dir_all(&dir).ok()?;
+        std::fs::File::create(&probe).ok()?;
+    }
+    probe.to_str().map(str::to_owned)
 }
 
 fn rasterize_file_icon(
@@ -1192,6 +1225,30 @@ mod tests {
             "com.apple.application-file",
             "the two lookups agreed, so this test no longer discriminates"
         );
+    }
+
+    #[test]
+    fn an_extension_draws_as_finder_draws_a_file_that_carries_it() {
+        let dir = std::env::temp_dir().join("ng-icon-probe-test");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        for ext in ["md", "txt", "zip", "pdf"] {
+            let file = dir.join(format!("sample.{ext}"));
+            std::fs::write(&file, b"x").expect("sample file");
+            let by_extension = draw_file_icon(FileType::Extension(ext), px(32.)).expect("ext");
+            let by_file =
+                draw_file_icon(FileType::Path(file.to_str().unwrap()), px(32.)).expect("file");
+            assert_eq!(
+                by_extension.image.as_bytes(0),
+                by_file.image.as_bytes(0),
+                "{ext} drew unlike Finder's icon for such a file"
+            );
+        }
+    }
+
+    #[test]
+    fn a_package_extension_keeps_the_bundle_icon() {
+        let declared = ut_type(true, "app").expect("app is declared");
+        assert!(extension_probe(&declared, "app").is_none());
     }
 
     #[test]
